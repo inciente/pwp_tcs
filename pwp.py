@@ -4,6 +4,14 @@ import numpy as np; import seawater, gsw;
 from dataclasses import dataclass
 
 
+'''
+Big tasks pending as of March 27, 2024:
+    - Does World need all the responsibilities it currently has?
+    - Steps 4.4, 4.5, 4.6 in algorithm below
+    - Details for forcing: coupled vs. uncoupled (separate class? functions?)
+    - Design tests for individual steps in algorithm
+'''
+
 ''' 
 This module is largely refactored from Earlew's pwp_python_00 package. Here, PWP functions have been broken into multiple subfunctions, and relevant classes were to improve organization and modularity with other applications, such as coupling with atmospheric models.
 
@@ -76,7 +84,8 @@ class World:
 
     def prepare_profile( self , profile ):
         # Profile is xr.dataset with temp, sal, dens, u, v
-        zvals = np.arange( self.dz / 2 , self.zmax + 0.0001 , self.dz ); # depth of cell centers
+        # determine depth of cell centers
+        zvals = np.arange( self.dz / 2 , self.zmax + 0.01 - self.dz/2 , self.dz ); 
         profile = profile.interp( z = zvals );
         # add absorption profile
         profile['absorb'] = self.make_absorption( profile )
@@ -142,6 +151,45 @@ class World:
         profile['temp'][1:] = profile['temp'][1:] + dT
         return profile 
 
+    def rayleigh_friction( self, profile ):
+        if self.drag_ON:
+            drag_loss = self.drag_coef * self.f() * self.dt
+            profile['u'] = profile['u'] * ( 1 - drag_loss )
+            profile['v'] = profile['v'] * ( 1 - drag_loss )
+        else: 
+            pass
+        return profile
+   
+    def bulk_mix( self, profile ):
+        # mix based on bulk Ri, between thermocline levels and surface
+
+        mld, mld_idx = self.find_ML( profile ); 
+        # get surface properties (might have to change for ML average)
+        rho_0 = profile['dens'].isel( z = 0 )
+        vel_0 = ( profile['u'] + 1j * profile['v'] ).isel( z = 0 );
+        
+        # now cycle through thermocline and apply mixing where necessary 
+        for jj in range( mld_idx , len( profile['z'] ) ):
+            dif_rho = profile['dens'][jj] - rho_0
+            dif_vel = ( profile['u'] + 1j * profile['v'] ).isel( z = jj ) 
+            dif_vel = np.abs( dif_vel - vel_0 ) ** 2 
+            
+            if dif_vel == 0:
+                continue
+            else:
+                # Compute bulk Ri
+                Ri_v = 9.81 * dif_rho / dif_vel / ( self.dz * jj )             
+            
+                # now use these values and call mixing routine if necessary
+                if Ri_v > self.Ri_b:
+                    continue
+                else: 
+                    profile = self.mix5( profile , 0, jj ); 
+                    # mix jj to surface, as earlew
+       
+        return profile 
+
+
 
 def pwp_step( world, profile, forcing ):
     # Apply PWP algorithm 
@@ -151,6 +199,7 @@ def pwp_step( world, profile, forcing ):
     # --- might want to add a point checking for freezing here
     profile['dens'] = sw.dens0( profile['sal'], profile['temp'] ); # update density
     # --- relieve static instability
+    profile = remove_static_instability( profile )
     # apply momentum flux and coriolis rotation
     profile = world.rotate( profile );
     profile = world.wind_on_ML( profile, forcing ); 
@@ -158,11 +207,58 @@ def pwp_step( world, profile, forcing ):
     profile = world.rotate( profile ); # coriolis for dt / 2
     # time to apply mixing parameterizations
     profile = world.bulk_mix( profile );
+    # still need to add gradient Ri mixing, and background diffusion
+
+
+# -------------- below are pwp functions independent of simulation parameters
+
+def remove_static_instability( profile ):
+    # Find and relieve any static instability in density array
+    # doesn't involve any simulation parameters
+    stat_unstable = True;
+
+    while stat_unstable:
+        # compute density gradient and find unstable points
+        rho_grad = - profile['dens'].differentiate( 'z' ); 
+        
+        if np.any( rho_grad > 0 ):
+            # means we found an unstable point
+            stat_unstable = True 
+            # get index of first unstable point
+            inst0_idx = np.flatnonzero( rho_grad > 0 )[0]
+            # prepare to mix 2 cells above and 2 cells below
+            inst_top = max( 0, inst0_idx - 2 ) # avoid going beyond array 
+            inst_bot = min( len( profile['z'].values - 1 ), inst0_idx + 2 )
+            # apply mixing
+            profile = mix5( profile , inst_top, inst_bot );
+        
+        else: 
+            # no unstable points left
+            stat_unstable = False
+    
+    return profile
+
+
+def mix5( profile, ztop, zbot ):
+    # removed from world because it doesn't use world properties
+    # mix all fluid properties between ztop and zbot  
+    # need to verify definitions, because earlew sets ztop as surface
+    vars2change = ['u','v','temp','salt']
+    for key in vars2change : 
+        mval = profile[key][ ztop : zbot ].mean('z')
+        profile[key][ ztop : zbot ] = mval; 
+        
+    # update density with the new temp, salt
+    profile['dens'][ ztop : zbot ] = sw.dens0( profile['sal'][ztop:zbot] , 
+                                           profile['temp'][ztop:zbot] )
+    return profile 
+
 
 
 def stir( profile, rc, r, j):
     # This mixes cells around j (depth-wise) to ensure that the 
     # Ri after (r_new) is r_new > rc (stands for critical Ri)
+    # will be difficult to interpret from earlew's code
     pass 
 
 def interpolator( xr_obj, x_locs ):
