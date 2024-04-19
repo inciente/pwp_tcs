@@ -34,8 +34,18 @@ This module is largely refactored from Earlew's pwp_python_00 package. Here, PWP
 
 '''
 
-# So many steps use the series of profiles t, s, d, u, v (d is density). This can be simplified to an xr.Dataset() that includes all. WIll learn more about implementation to figure out requirements.
+def translate_argo( xr_prof ):
+    # Take in an argo profile, as saved by argo_cleaner, and prepare it for pwp
+    # comes in with coordinate PRES, fields TEMP, CT, RHO, PSAL, more
+    # needs to leave with coordinate z, fields 
+    xr_prof = xr_prof.rename( {'PRES':'z' , 'RHO':'dens', 'TEMP':'temp', 'PSAL':'sal'} )
+    # extrapolate variables to surface using nearest datum
+    new_z = np.concatenate( [ [0], xr_prof['z'].values ] );
+    xr_prof = xr_prof.interp( z = new_z , kwargs = { 'fill_value':'extrapolate' } , 
+                              method = 'nearest' )
+    return xr_prof
 
+@dataclass
 class World: 
     ''' 
     This class stores PWP simulation parameters and some major methods involved in timestepping.
@@ -50,7 +60,7 @@ class World:
     dt : float = 300; # in seconds
     zmax : float = 150; # in meters
     # parameters involved in mixing
-    mld_thres : float = 1e-4; # density threshold for MLD
+    mld_thres : float = 0.05; # density threshold for MLD
     Ri_g : float = 0.25; # threshold gradient richardson number
     Ri_b : float = 0.65; # threshold bulk richardson number
     rkz : float = 1e-6; # backgroudn vertical diffusivity
@@ -77,7 +87,7 @@ class World:
         absorb_sw = rs1 * ( np.exp( - ztop / self.beta_1 ) - np.exp( - zbot / self.beta_1 ) ) 
         absorb_lw = ( 1 - rs1 ) * ( np.exp( -ztop / self.beta_2 ) - np.exp( zbot / self.beta_2 ) );
         # save total absorbption
-        tot_absorb = xr.DataArray( data = abosrb_sw + absorb_lw , 
+        tot_absorb = xr.DataArray( data = absorb_sw + absorb_lw , 
                             coords = { 'z' : profile['z'] } )
         return tot_absorb
 
@@ -117,10 +127,10 @@ class World:
         # find ml depth of profile and its index in z
         rho_diff = profile['dens'] - profile['dens'].isel( z = 0 ); 
         # find first index for which diff is above threshold
-        mld_idx = np.nonflatzero( rho_diff > self.mld_thres )[0]
+        mld_idx = np.flatnonzero( rho_diff > self.mld_thres )[0]
         assert mld_idx.size != 0, 'Error: ML depth is undefined'
         # get numerical value of MLD
-        mld = profile['z'].isel( z = mld_idz )
+        mld = profile['z'].isel( z = mld_idx )
         return mld, mld_idx
 
     def wind_on_ML( self, profile , forcing ):
@@ -261,16 +271,6 @@ def stir( profile, rc, r, j):
     # will be difficult to interpret from earlew's code
     pass 
 
-def interpolator( xr_obj, x_locs ):
-    # interpolate xr_obj onto locations specified by x_locs (dict)
-    xr_obj = xr_obj.interp( x_locs )
-    return xr_obj
-
-def update_uv( ocn , met, params ):
-    # This is the function that takes care of changing ocean u,v
-    # Will return a new ocn object
-    pass 
-
 def update_TS( ocn , met, params ):
     # Function to implement a single timestep on ocn T,S
     # Will return a new ocn object
@@ -280,12 +280,5 @@ def SW_radiation( ocn, met, params ):
     # Given shortwave flux, determine exponential profile of absorption. Might not need to know ocn state. 
     pass 
 
-def bulk_Ri( ocn , params ):
-    # Compute bulk Richardson Number
-    pass
 
-def get_MLD( profile , params ):
-    # Return ML depth given profile and parameters.
-    pass 
 
-# And many other functions that the existing functions in Earlew's code will be broken down into. 
