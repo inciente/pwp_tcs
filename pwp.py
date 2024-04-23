@@ -2,6 +2,7 @@ import xarray as xr; import pandas as pd;
 from datetime import datetime, timedelta; 
 import numpy as np; import seawater, gsw; 
 from dataclasses import dataclass
+import argo_filter
 
 
 '''
@@ -38,6 +39,10 @@ def translate_argo( xr_prof ):
     # Take in an argo profile, as saved by argo_cleaner, and prepare it for pwp
     # comes in with coordinate PRES, fields TEMP, CT, RHO, PSAL, more
     # needs to leave with coordinate z, fields 
+    
+    # get rid of repeated data
+    xr_prof = argo_filter.simplify_profile( xr_prof ) 
+    # change variable names
     xr_prof = xr_prof.rename( {'PRES':'z' , 'RHO':'dens', 'TEMP':'temp', 'PSAL':'sal'} )
     # extrapolate variables to surface using nearest datum
     new_z = np.concatenate( [ [0], xr_prof['z'].values ] );

@@ -18,26 +18,26 @@ class inversion:
         self.dz = np.gradient( profile['z'].values )
 
     def thickness( self ):
-        return ( self.dz * self.where ).sum( 'z' )
+        return ( self.dz * self.where ).sum( 'z' ).values
 
     def heat_content( self ):
         # Total heat above SST available within inversion
         rel_temp = ( self.profile['temp'] - self.sst ).where( self.where )
         # multiply relative temp by rho, cp, and integrate vertically
         heat_inv = 1024 * 4000 * ( self.dz * rel_temp ).sum( 'z' )
-        return heat_inv
+        return heat_inv.values
 
     def max_temp( self ):
         # Maximum temperature (relative to sst) within inversion
         rel_temp = ( self.profile['temp'] - self.sst ).where( self.where )
-        return rel_temp.max( 'z' )
+        return rel_temp.max( 'z').values
 
     def nsquared( self ): 
         # Return mean value of N2 inside the inversion
         N2 = 9.81 / 1024 * self.profile['dens'].differentiate( 'z' )
         # Save mean value within inversion
         N2 = N2.where( self.where ).mean( 'z' )
-        return N2
+        return N2.values
 
 def heaviside( xr_obj, delta = 0 ):
     # 0 when dat < 0, 1 when dat >= 0;
