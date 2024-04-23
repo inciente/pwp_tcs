@@ -42,8 +42,52 @@ class argo_search:
         # add CT and RHO to profile
         prof = prepare_profile( prof ); 
         return prof
+ 
+    def distribute_task( self, func ):
+        # Applies func to all profiles in the search class
+        N = len( self.directory ); 
+        print('Will apply function to ' + str(N) + ' profiles.')
+        
+        # Now access individual profiles and store output in list
+        results = []; # make sure that func preserves some metadata
+        failed = []; # store rows where execution fails 
+
+        for jj in range( N ):
+            # Extract data
+            profile = self.single_profile( jj )
+            
+            # Argopy loads some broken data, so func() will not always run successfully
+            try: 
+                # Run func and save output only if useful
+                res = func( profile );
+                if res is not None:
+                    # useful output. simplify drops redundant info
+                    results.append( simplify_profile( res ) ) 
+            except:
+                # Store position of failure
+                failed.append( jj )
+
+        print( 'Execution failed on ' + str( len( failed ) ) + ' profiles.' )
+        return results, failed 
 
 
+def simplify_profile( profile ):
+    # Reduce the data stored in xr.Datasets of argo profiles that come out of argopy
+
+    # List of variables that will be switched to nprof 
+    vars2clean = ['LATITUDE','LONGITUDE','TIME','CYCLE_NUMBER',
+        'DIRECTION','PLATFORM_NUMBER','PRES_ERROR', 'PSAL_ERROR',
+        'TEMP_ERROR']
+
+    for var in vars2clean:
+        # Get variable as single-element 1-D array
+        dat = np.array( [ profile[var][0].values ] ).flatten()
+        # Save it to replace extended version
+        profile[ var ] = xr.DataArray( data = dat, dims = ('nprof') )
+    
+    return profile.drop_vars( 'N_POINTS' )
+
+ 
 # To be used with argopy.DataFetcher.region()
 def search_region( region, period ):
     # region is a list of 4 coordinates [xmin, xmax, ymin, ymax, pmin, pmax ]
@@ -55,39 +99,6 @@ def search_region( region, period ):
     # make dataframe of individual profiles found
     info = fetched.to_index(); # use wmo and cyc columns to explore dataset
     return fetched, info
-
-
-# and the profiles that are stored within the output
-
-def prepare_profile( xr_prof ):
-    # Take in a profile,  pass through GSW and return gridded CT, dens
-    
-    # data into xarray with easier format
-    #xr_prof = profile.to_xarray(); # easier format
-    #xr_prof = xr_prof.swap_dims( { 'N_POINTS':'PRES' } )
-        
-    # save conservative temperature and sigma0
-    xr_prof['CT'] = gsw.CT_from_t( xr_prof['PSAL'], xr_prof['TEMP'], 
-                                   xr_prof['PRES'] )
-    xr_prof['RHO'] = gsw.density.rho( xr_prof['PSAL'], xr_prof['CT'], 
-                                   xr_prof['PRES'] )
-    # Many variables have values repeated for all pressures
-    # clean those up
-    xr_prof = clean_argo_prof( xr_prof );    
-
-    return xr_prof 
-
-def clean_argo_prof( xr_prof ):
-    # Many variables have values repeated for all pressures.
-    # Instead of keeping repeated values along PRES, create
-    # store somewhere else
-    vars2clean = ['LATITUDE','LONGITUDE','TIME','CYCLE_NUMBER',
-        'DIRECTION','PLATFORM_NUMBER','PRES_ERROR', 'PSAL_ERROR',
-        'TEMP_ERROR']
-    for var in vars2clean: 
-        pass
-    return xr_prof
-
 
 
 
