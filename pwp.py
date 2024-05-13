@@ -35,6 +35,17 @@ This module is largely refactored from Earlew's pwp_python_00 package. Here, PWP
 
 '''
 
+class simulation:
+    '''
+    Joint management of simulation input, rules, and orders.
+    '''
+
+    def __init__( self, world, prof0, forcing ):
+        self.world = world
+        self.prof0 = translate_argo( prof0 )
+        self.forcing = forcing
+
+
 def translate_argo( xr_prof ):
     # Take in an argo profile, as saved by argo_cleaner, and prepare it for pwp
     # comes in with coordinate PRES, fields TEMP, CT, RHO, PSAL, more
@@ -90,20 +101,29 @@ class World:
         zbot = profile['z'] + self.dz / 2; # depth of bottom of cells
         # treat shortwave and longwave separately
         absorb_sw = rs1 * ( np.exp( - ztop / self.beta_1 ) - np.exp( - zbot / self.beta_1 ) ) 
-        absorb_lw = ( 1 - rs1 ) * ( np.exp( -ztop / self.beta_2 ) - np.exp( zbot / self.beta_2 ) );
+        absorb_lw = ( 1 - rs1 ) * ( np.exp( -ztop / self.beta_2 ) - np.exp( - zbot / self.beta_2 ) );
         # save total absorbption
         tot_absorb = xr.DataArray( data = absorb_sw + absorb_lw , 
                             coords = { 'z' : profile['z'] } )
         return tot_absorb
 
 
-    def prepare_profile( self , profile ):
+    def interp_profile( self , profile, preset_u = None ):
         # Profile is xr.dataset with temp, sal, dens, u, v
         # determine depth of cell centers
         zvals = np.arange( self.dz / 2 , self.zmax + 0.01 - self.dz/2 , self.dz ); 
         profile = profile.interp( z = zvals );
         # add absorption profile
         profile['absorb'] = self.make_absorption( profile )
+        
+        # Predefined initial condition for ocean u,v 
+        if preset_u is None:
+            all_zeros = np.zeros( profile['absorb'].shape )
+            my_coords = profile['absorb'].coords
+            profile['u'] = xr.DataArray( data = all_zeros, 
+                             coords = my_coords )
+            profile['v'] = xr.DataArray( data = all_zeros, 
+                             coords = my_coords )
         return profile
 
     def flag_forcing( self, forcing ):
@@ -124,8 +144,8 @@ class World:
     def rotate( self, profile ):
         # Apply rotation that results from Coriolis over dt / 2
         f = self.f(); 
-        profile['u'] = profile['u'] + f * profile['v'] * self.dt / 2
-        profile['v'] = profile['v'] - f * profile['u'] * self.dt / 2 
+        profile['u'] += f * profile['v'] * self.dt / 2
+        profile['v'] += - f * profile['u'] * self.dt / 2 
         return profile 
 
     def find_MLD( self, profile ):
@@ -155,6 +175,7 @@ class World:
                  * self.dt / ( self.dz * profile['dens'].isel( z = 0 ) * self.cpw )
         dS = forcing['emp'] * profile['sal'].isel( z = 0 ) * self.dt / self.dz
         # set new values
+        print( dS.values )
         profile['temp'][0] += dT
         profile['sal'][0] += dS
         return profile
@@ -163,7 +184,8 @@ class World:
         # apply downwelling sw radiation to subsurface layers
         dT = ( forcing['q_in'] * profile['absorb'][1:] ) * self.dt 
         dT = dT / ( self.dz * self.cpw * profile['dens'][1:] )
-        profile['temp'][1:] = profile['temp'][1:] + dT
+        # update temperature value
+        profile['temp'][1:] += dT
         return profile 
 
     def rayleigh_friction( self, profile ):
@@ -178,7 +200,7 @@ class World:
     def bulk_mix( self, profile ):
         # mix based on bulk Ri, between thermocline levels and surface
 
-        mld, mld_idx = self.find_ML( profile ); 
+        mld, mld_idx = self.find_MLD( profile ); 
         # get surface properties (might have to change for ML average)
         rho_0 = profile['dens'].isel( z = 0 )
         vel_0 = ( profile['u'] + 1j * profile['v'] ).isel( z = 0 );
@@ -199,7 +221,7 @@ class World:
                 if Ri_v > self.Ri_b:
                     continue
                 else: 
-                    profile = self.mix5( profile , 0, jj ); 
+                    profile = mix5( profile , 0, jj ); 
                     # mix jj to surface, as earlew
        
         return profile 
@@ -207,12 +229,14 @@ class World:
 
 
 def pwp_step( world, profile, forcing ):
-    # Apply PWP algorithm 
+    # Apply PWP algorithm i
+    profile = profile.copy()
     # Heat and salinity fluxes at the surface and then below
     profile = world.update_surface( profile, forcing );
     profile = world.subsurface_sw( profile, forcing );          
     # --- might want to add a point checking for freezing here
-    profile['dens'] = sw.dens0( profile['sal'], profile['temp'] ); # update density
+    profile['dens'] = gsw.rho_t_exact( profile['sal'], 
+                          profile['temp'], profile['z'] ); # update density
     # --- relieve static instability
     profile = remove_static_instability( profile )
     # apply momentum flux and coriolis rotation
@@ -223,7 +247,7 @@ def pwp_step( world, profile, forcing ):
     # time to apply mixing parameterizations
     profile = world.bulk_mix( profile );
     # still need to add gradient Ri mixing, and background diffusion
-
+    return profile 
 
 # -------------- below are pwp functions independent of simulation parameters
 
@@ -231,7 +255,7 @@ def remove_static_instability( profile ):
     # Find and relieve any static instability in density array
     # doesn't involve any simulation parameters
     stat_unstable = True;
-
+    print( 'removing static instability' )
     while stat_unstable:
         # compute density gradient and find unstable points
         rho_grad = - profile['dens'].differentiate( 'z' ); 
@@ -243,7 +267,7 @@ def remove_static_instability( profile ):
             inst0_idx = np.flatnonzero( rho_grad > 0 )[0]
             # prepare to mix 2 cells above and 2 cells below
             inst_top = max( 0, inst0_idx - 2 ) # avoid going beyond array 
-            inst_bot = min( len( profile['z'].values - 1 ), inst0_idx + 2 )
+            inst_bot = min( len( profile['z'].values ) - 1 , inst0_idx + 2 )
             # apply mixing
             profile = mix5( profile , inst_top, inst_bot );
         
@@ -258,14 +282,16 @@ def mix5( profile, ztop, zbot ):
     # removed from world because it doesn't use world properties
     # mix all fluid properties between ztop and zbot  
     # need to verify definitions, because earlew sets ztop as surface
-    vars2change = ['u','v','temp','salt']
+    vars2change = ['u','v','temp','sal']
     for key in vars2change : 
         mval = profile[key][ ztop : zbot ].mean('z')
         profile[key][ ztop : zbot ] = mval; 
         
     # update density with the new temp, salt
-    profile['dens'][ ztop : zbot ] = sw.dens0( profile['sal'][ztop:zbot] , 
-                                           profile['temp'][ztop:zbot] )
+    profile['dens'][ ztop : zbot ] = gsw.rho_t_exact( \
+                 profile['sal'][ztop:zbot] , 
+                 profile['temp'][ztop:zbot] ,
+                 profile['z'][ztop:zbot] )
     return profile 
 
 # ------------------------------------------------------------
@@ -311,8 +337,8 @@ def translate_met( met_xr ):
             del var_names[var] 
 
     # Now change names of variables in xr_obj
-    xr_obj = xr_obj.rename( var_names )
-    return xr_obj     
+    met_xr = met_xr.rename( var_names )
+    return met_xr   
 
 def get_tau( met_xr ):
     # Compute wind stress using the speed-dependent drag of Large and Pond (1981)
