@@ -89,13 +89,16 @@ def simplify_profile( profile ):
 
  
 # To be used with argopy.DataFetcher.region()
-def search_region( region, period ):
+def search_region( region, period, opt_dict = None ):
     # region is a list of 4 coordinates [xmin, xmax, ymin, ymax, pmin, pmax ]
     # period is a list of two strings w/ format ['2011-01-01','2011-04-01']
     
     # instantiate finder
-    fetched = DataFetcher( mode = 'research' , parallel = True , 
-                           progress = True ).region( region + period  )
+    if opt_dict is None:
+        # This is where options for fetcher are set, enables BGC usage
+        opt_dict = { 'mode' : 'research', 'parallel' : True, 'progress' : True }
+
+    fetched = DataFetcher( opt_dict ).region( region + period  )
     # make dataframe of individual profiles found
     info = fetched.to_index(); # use wmo and cyc columns to explore dataset
     return fetched, info
