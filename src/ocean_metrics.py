@@ -89,4 +89,47 @@ def PE_change( prof_before, prof_after, vert_coord = 'PRESSURE' ):
     diff = get_PE( prof_after ) - get_PE( prof_before )
     return diff.values
 
-  
+def get_zmix( profile, dT, vert_coord = 'PRESSURE' ):
+    # Gets conscious vertical profile and returns depth above which mean T is SST - dT
+    # Temperature averaged between surface and bottom of cells
+    noise = ( np.random.rand( len( profile['TEMP'] ) ) - 0.5 ) * 1e-3
+    noise = np.expand_dims( noise, 1 )
+    mean_at_bottom = ( ( profile['TEMP'] + noise ) \
+                   * profile['dz'] ).cumsum( vert_coord ) \
+                       / profile['dz'].cumsum( vert_coord )
+    #mean_at_bottom = mean_at_bottom.where( profile['TEMP'].isel( { vert_coord : 0 } ) > 26 )
+    target_temp = profile['TEMP'].isel( { vert_coord : 0 } ) - dT;  # sst - dT
+    diff = ( profile['TEMP'] - target_temp ); # zmix is wherever this is 0 
+    
+    # Find temperature at bottom of cells surrounding zmix
+    above_temp = mean_at_bottom.where( diff > 0 ).min( \
+                             dim = vert_coord )
+    below_temp = mean_at_bottom.where( diff < 0 ).max( \
+                             dim = vert_coord )
+    
+    # Now find the depth of those cells 
+    above_p = mean_at_bottom[ vert_coord ].where( \
+           mean_at_bottom == above_temp ).mean( dim = vert_coord )
+    below_p = mean_at_bottom[ vert_coord ].where( \
+           mean_at_bottom == below_temp ).mean( dim = vert_coord )
+    # Get dTdz to approximate zmix by taylor expansions
+    dTdz = ( above_temp - below_temp ) / ( below_p - above_p ); # this should be positive
+    zmix = above_p + ( above_temp - target_temp ) / dTdz # first order taylor
+    
+    return zmix
+
+
+
+def CI_index( profile , dT = 2, vert_coord = 'PRESSURE' ):
+    # Compute the cooling inhibition index given SST cooling of magnitude dT induced by mixing
+    profile = make_profile_conscious( profile ).persist()
+    # ----------- Find zmix
+    zmix = get_zmix( profile , dT = dT, vert_coord = vert_coord );
+
+    # Generate mixed profile
+    after = mix_profile( profile, zmix, vert_coord = vert_coord )
+
+    # PE difference
+    CI = PE_change( profile, after , vert_coord = vert_coord )
+    return CI, zmix
+     
