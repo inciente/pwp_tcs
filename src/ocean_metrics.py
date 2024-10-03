@@ -1,5 +1,5 @@
 import xarray as xr; import numpy as np; import pandas as pd; 
-
+import gsw
 '''
 Module containing supporting functions to estimate metrics of ocean-atmosphere
 interactions under tropical cyclones.
@@ -44,31 +44,41 @@ def mix_profile( profile, zmix , vert_coord = 'PRESSURE' ):
     # and mix its properties down to depth zmix. 
     # Return transformed profile, and assume no mixing below zmix.
 
-    # Find all cells fully contained between the surface and zmix
-    fully_contained = profile['bottoms'] < zmix
-    final_cell = ( profile['tops'] < zmix ) * ( profile['bottoms'] > zmix ); 
+    # Find depth of deepest cell sitting above zmix
+    fully_contained_cond = ( profile['bottoms'] < zmix )
+    fully_contained = profile[ vert_coord ].where( fully_contained_cond ).max( vert_coord ); 
+    
+    # Find depth of cell that is cut in half by zmix
+    final_cell_cond = ( profile['tops'] < zmix ) * ( profile['bottoms'] > zmix ); 
+    final_cell = profile[ vert_coord ].where( final_cell_cond ).mean( vert_coord )
+
+#    is_good = ( ~np.isnan( fully_contained ) ) * ( ~np.isnan( fully_contained) )
 
     # Weighted average temp and salinity in layers fully above zmix
-    def weighted_mean( xr_obj, var ):
-        full_part = xr_obj[ var ].isel( { vert_coord : fully_contained } ).weighted( xr_obj['dz'][fully_contained] \
-                                            ).mean( vert_coord )
-        full_part = full_part * ( profile['dz'][fully_contained].sum() / zmix )
+    def weighted_mean( var ):
+        full_part = profile[ var ].where( profile[ vert_coord ] < zmix ).weighted( profile['dz'] ).mean( vert_coord )
         return full_part 
     # Now we need a factor for the layer that includes zmix
-    final_factor = ( zmix - profile['tops'].isel( { vert_coord : final_cell } ) ) / zmix
-    
-    Tmean = weighted_mean( profile, 'TEMP' ) + final_factor * profile['TEMP'].isel( { vert_coord : final_cell } ).values
-    Smean = weighted_mean( profile, 'SALT' ) + final_factor * profile['SALT'].isel( { vert_coord : final_cell } ).values
+    final_factor = ( zmix - profile['tops'].sel( { vert_coord : final_cell } , 'nearest'  ) ) / zmix
+    #final_factor = 0; 
+    Tmean = weighted_mean(  'TEMP' ) * (1-final_factor) + final_factor * profile['TEMP'].sel( { vert_coord : final_cell } , method = 'nearest' ).values
+    Smean = weighted_mean(  'SALT' ) * (1-final_factor) + final_factor * profile['SALT'].sel( { vert_coord : final_cell } , method = 'nearest' ).values
 
     # Now update TEMP and SALT in all cells (fully and partially contained)
     nu_profile = xr.Dataset()
-    nu_temp = profile['TEMP'].values.copy(); nu_salt = profile['SALT'].values.copy();
     
-    nu_temp[ fully_contained.values ] = Tmean ; 
-    nu_salt[ fully_contained.values ] = Smean ;
+    nu_temp = xr.where( cond = fully_contained_cond , x = Tmean, y = profile['TEMP'] )
+    nu_salt = xr.where( cond = fully_contained_cond , x = Smean, y = profile['SALT'] )
+    print( final_factor.mean().values )
 
-    nu_temp[ final_cell.values ] = profile['TEMP'][final_cell].values*(1-final_factor) + final_factor * Tmean;
-    nu_salt[ final_cell.values ] = profile['SALT'][final_cell].values*(1-final_factor) + final_factor * Smean;
+    final_temp = profile['TEMP'].sel( { vert_coord : final_cell } , method = 'nearest' ) * (1 - final_factor) \
+                                       + final_factor * Tmean
+    nu_temp = xr.where( cond = final_cell_cond , x = final_temp , y = nu_temp )
+
+    final_salt = profile['SALT'].sel( { vert_coord : final_cell } , method = 'nearest' ) * (1 - final_factor ) \
+                                       + final_factor * Smean
+    nu_salt = xr.where( cond = final_cell_cond , x = final_salt , y = nu_salt )
+
 
     nu_profile['TEMP'] = xr.DataArray( data = nu_temp, dims = profile.dims , coords = profile.coords ); 
     nu_profile['SALT'] = xr.DataArray( data = nu_salt, dims = profile.dims, coords = profile.coords )
@@ -76,16 +86,18 @@ def mix_profile( profile, zmix , vert_coord = 'PRESSURE' ):
     return nu_profile
 
 
+
+
+def get_PE( profile , vert_coord = 'PRESSURE' ):
+    pe_dens = ( profile['DENS'] * 9.81 * ( - profile[ vert_coord ] + 300 ) ).integrate( vert_coord )
+    return pe_dens
+
 def PE_change( prof_before, prof_after, vert_coord = 'PRESSURE' ):
     # Take in two profiles, compute their PEs, and return difference (integer)
     for prof in [prof_before, prof_after]:
         prof['DENS'] = gsw.rho( prof['SALT'], prof['TEMP'], prof[ vert_coord ] )
         prof = prof.sel( { vert_coord : slice(0, 300) } )
 
-    def get_PE( profile ):
-        pe_dens = ( profile['DENS'] * 9.81 * ( profile[ vert_coord ] + 300 ) ).integrate( vert_coord )
-        return pe_dens
-                                                                            
     diff = get_PE( prof_after ) - get_PE( prof_before )
     return diff.values
 
