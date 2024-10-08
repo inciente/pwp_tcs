@@ -144,4 +144,23 @@ def CI_index( profile , dT = 2, vert_coord = 'PRESSURE' ):
     # PE difference
     CI = PE_change( profile, after , vert_coord = vert_coord )
     return CI, zmix
-     
+    
+
+def get_T100( profile , vert_coord = 'PRESSURE' ):
+    selector = { vert_coord : slice( 0, 100 ) }
+    dz = profile['dz'].sel( selector )
+    temp = profile['TEMP'].sel( selector ).weighted( selector ).mean( vert_coord )
+    return temp
+
+
+
+
+
+
+
+
+
+
+
+
+
